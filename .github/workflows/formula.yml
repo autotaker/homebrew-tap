@@ -30,8 +30,8 @@ jobs:
         run: |
           set -eu
           brew tap autotaker/tap https://github.com/autotaker/homebrew-tap
-         tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
-         mkdir -p "$tap_dir/Formula"
+          tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
+          mkdir -p "$tap_dir/Formula"
           if ! cmp -s "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"; then
             cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
           fi
@@ -68,8 +68,8 @@ jobs:
         run: |
           set -eu
           brew tap autotaker/tap https://github.com/autotaker/homebrew-tap
-         tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
-         mkdir -p "$tap_dir/Formula"
+          tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
+          mkdir -p "$tap_dir/Formula"
           if ! cmp -s "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"; then
             cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
           fi
