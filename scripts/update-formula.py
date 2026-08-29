@@ -79,7 +79,7 @@ def render(version: str, checksums: dict[str, str]) -> str:
 
   test do
     output = shell_output("#{{bin}}/backlog version --json")
-    assert_match version.to_s, output
+    assert_match "{version}", output
     assert_match "build_time", output
   end
 end

@@ -32,7 +32,7 @@ class Backlog < Formula
 
   test do
     output = shell_output("#{bin}/backlog version --json")
-    assert_match version.to_s, output
+    assert_match "0.1.1", output
     assert_match "build_time", output
   end
 end

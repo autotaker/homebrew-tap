@@ -23,6 +23,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Homebrew on Linux
+        if: runner.os == 'Linux'
+        uses: Homebrew/actions/setup-homebrew@main
       - name: Register checkout as a local tap
         run: brew tap autotaker/tap "$GITHUB_WORKSPACE"
       - name: Audit formula
@@ -51,6 +54,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Homebrew on Linux
+        if: runner.os == 'Linux'
+        uses: Homebrew/actions/setup-homebrew@main
       - name: Register checkout as a local tap
         run: brew tap autotaker/tap "$GITHUB_WORKSPACE"
       - name: Verify runner architecture
