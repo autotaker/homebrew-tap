@@ -70,7 +70,11 @@ jobs:
             "backlog_${VERSION}_windows_amd64.zip"; do
             gh release download "$TAG" --repo "$SOURCE_REPOSITORY" --pattern "$asset" --dir .tmp/release --clobber
           done
-          (cd .tmp/release && shasum -a 256 -c checksums.txt)
+          if command -v shasum >/dev/null 2>&1; then
+            (cd .tmp/release && shasum -a 256 -c checksums.txt)
+          else
+            (cd .tmp/release && sha256sum -c checksums.txt)
+          fi
 
       - name: Reject duplicate or older Formula update
         id: guard
