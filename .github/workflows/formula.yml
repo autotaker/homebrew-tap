@@ -26,8 +26,13 @@ jobs:
       - name: Set up Homebrew on Linux
         if: runner.os == 'Linux'
         uses: Homebrew/actions/setup-homebrew@main
-      - name: Register checkout as a local tap
-        run: brew tap autotaker/tap "$GITHUB_WORKSPACE"
+      - name: Register the PR Formula in Homebrew
+        run: |
+          set -eu
+          brew tap autotaker/tap https://github.com/autotaker/homebrew-tap
+          tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
+          mkdir -p "$tap_dir/Formula"
+          cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
       - name: Audit formula
         run: brew audit --strict --new --online autotaker/tap/backlog
       - name: Check formula style
@@ -57,8 +62,13 @@ jobs:
       - name: Set up Homebrew on Linux
         if: runner.os == 'Linux'
         uses: Homebrew/actions/setup-homebrew@main
-      - name: Register checkout as a local tap
-        run: brew tap autotaker/tap "$GITHUB_WORKSPACE"
+      - name: Register the PR Formula in Homebrew
+        run: |
+          set -eu
+          brew tap autotaker/tap https://github.com/autotaker/homebrew-tap
+          tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
+          mkdir -p "$tap_dir/Formula"
+          cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
       - name: Verify runner architecture
         env:
           EXPECTED_ARCH: ${{ matrix.expected_arch }}
