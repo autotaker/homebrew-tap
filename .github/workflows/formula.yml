@@ -30,9 +30,11 @@ jobs:
         run: |
           set -eu
           brew tap autotaker/tap https://github.com/autotaker/homebrew-tap
-          tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
-          mkdir -p "$tap_dir/Formula"
-          cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
+         tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
+         mkdir -p "$tap_dir/Formula"
+          if ! cmp -s "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"; then
+            cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
+          fi
       - name: Audit formula
         run: brew audit --strict --new --online autotaker/tap/backlog
       - name: Check formula style
@@ -66,9 +68,11 @@ jobs:
         run: |
           set -eu
           brew tap autotaker/tap https://github.com/autotaker/homebrew-tap
-          tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
-          mkdir -p "$tap_dir/Formula"
-          cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
+         tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
+         mkdir -p "$tap_dir/Formula"
+          if ! cmp -s "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"; then
+            cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
+          fi
       - name: Verify runner architecture
         env:
           EXPECTED_ARCH: ${{ matrix.expected_arch }}
