@@ -1,0 +1,118 @@
+name: Update Formula
+
+on:
+  repository_dispatch:
+    types:
+      - backlog_release_published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published source release tag
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  SOURCE_REPOSITORY: autotaker/agent-harness-backlog
+
+jobs:
+  update:
+    name: update-formula
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve release tag
+        id: release
+        env:
+          DISPATCH_REPOSITORY: ${{ github.event.client_payload.repository }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+          MANUAL_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          if test "${{ github.event_name }}" = repository_dispatch; then
+            test "$DISPATCH_REPOSITORY" = "$SOURCE_REPOSITORY"
+            tag="$DISPATCH_TAG"
+          else
+            tag="$MANUAL_TAG"
+          fi
+          printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -eu
+          mkdir -p .tmp/release
+          gh release view "$TAG" --repo "$SOURCE_REPOSITORY" --json isDraft,isPrerelease,assets \
+            --jq 'select(.isDraft == false and .isPrerelease == false) | .assets[].name' > .tmp/release/assets.txt
+          for asset in \
+            "backlog_${VERSION}_darwin_amd64.tar.gz" \
+            "backlog_${VERSION}_darwin_arm64.tar.gz" \
+            "backlog_${VERSION}_linux_amd64.tar.gz" \
+            "backlog_${VERSION}_linux_arm64.tar.gz" \
+            "backlog_${VERSION}_windows_amd64.zip" \
+            checksums.txt; do
+            grep -Fx "$asset" .tmp/release/assets.txt
+          done
+          gh release download "$TAG" --repo "$SOURCE_REPOSITORY" --pattern checksums.txt --dir .tmp/release --clobber
+          for asset in \
+            "backlog_${VERSION}_darwin_amd64.tar.gz" \
+            "backlog_${VERSION}_darwin_arm64.tar.gz" \
+            "backlog_${VERSION}_linux_amd64.tar.gz" \
+            "backlog_${VERSION}_linux_arm64.tar.gz" \
+            "backlog_${VERSION}_windows_amd64.zip"; do
+            gh release download "$TAG" --repo "$SOURCE_REPOSITORY" --pattern "$asset" --dir .tmp/release --clobber
+          done
+          (cd .tmp/release && shasum -a 256 -c checksums.txt)
+
+      - name: Reject duplicate or older Formula update
+        id: guard
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -eu
+          current="$(sed -n 's#^      url "https://github.com/autotaker/agent-harness-backlog/releases/download/v\([^/]*\)/.*$#\1#p' Formula/backlog.rb | head -n 1)"
+          test -n "$current"
+          if test "$current" = "$VERSION"; then
+            echo "already at $VERSION"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif test "$(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n 1)" != "$VERSION"; then
+            echo "release $VERSION is not newer than Formula $current" >&2
+            exit 1
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Render Formula
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: python3 scripts/update-formula.py --version "$VERSION" --checksums .tmp/release/checksums.txt --output Formula/backlog.rb
+
+      - name: Create update branch and PR
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -eu
+          branch="automation/backlog-${VERSION}"
+          if test "$(gh pr list --base main --head "$branch" --state open --json number --jq 'length')" -gt 0; then
+            echo "an update PR for $VERSION is already open"
+            exit 0
+          fi
+          git switch --create "$branch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/backlog.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "backlog ${VERSION}"
+          git push --set-upstream origin "$branch"
+          gh pr create --base main --head "$branch" --title "backlog ${VERSION}" --body "Update Formula to the published backlog ${VERSION} release."
