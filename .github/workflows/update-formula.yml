@@ -1,15 +1,16 @@
 name: Update Formula
 
 on:
-  repository_dispatch:
-    types:
-      - backlog_release_published
   workflow_dispatch:
     inputs:
       tag:
-        description: Published source release tag
+        description: Published source release tag (for example, v0.1.1)
         required: true
         type: string
+
+concurrency:
+  group: backlog-formula-update
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -24,99 +25,241 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Resolve release tag
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Validate release tag
         id: release
         env:
-          DISPATCH_REPOSITORY: ${{ github.event.client_payload.repository }}
-          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
-          MANUAL_TAG: ${{ inputs.tag }}
+          TAG_INPUT: ${{ inputs.tag }}
         run: |
-          set -eu
-          if test "${{ github.event_name }}" = repository_dispatch; then
-            test "$DISPATCH_REPOSITORY" = "$SOURCE_REPOSITORY"
-            tag="$DISPATCH_TAG"
-          else
-            tag="$MANUAL_TAG"
+          set -euo pipefail
+          tag="$TAG_INPUT"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag must match v<major>.<minor>.<patch>" >&2
+            exit 1
           fi
-          printf '%s\n' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Download and verify published release
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
-          set -eu
+          set -euo pipefail
           mkdir -p .tmp/release
-          gh release view "$TAG" --repo "$SOURCE_REPOSITORY" --json isDraft,isPrerelease,assets \
-            --jq 'select(.isDraft == false and .isPrerelease == false) | .assets[].name' > .tmp/release/assets.txt
-          for asset in \
+
+          release_api="https://api.github.com/repos/${SOURCE_REPOSITORY}/releases/tags/${TAG}"
+          curl --fail --silent --show-error --location \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$release_api" > .tmp/release/release.json
+          jq -e --arg tag "$TAG" '
+            .tag_name == $tag and
+            .draft == false and
+            .prerelease == false and
+            (.published_at | type == "string" and length > 0)
+          ' .tmp/release/release.json >/dev/null
+
+          expected_assets=(
             "backlog_${VERSION}_darwin_amd64.tar.gz" \
             "backlog_${VERSION}_darwin_arm64.tar.gz" \
             "backlog_${VERSION}_linux_amd64.tar.gz" \
             "backlog_${VERSION}_linux_arm64.tar.gz" \
             "backlog_${VERSION}_windows_amd64.zip" \
-            checksums.txt; do
-            grep -Fx "$asset" .tmp/release/assets.txt
+            checksums.txt
+          )
+          printf '%s\n' "${expected_assets[@]}" | LC_ALL=C sort > .tmp/release/expected-assets.txt
+          jq -er '.assets | type == "array"' .tmp/release/release.json >/dev/null
+          jq -r '.assets[].name' .tmp/release/release.json | LC_ALL=C sort > .tmp/release/actual-assets.txt
+          test "$(wc -l < .tmp/release/actual-assets.txt | tr -d ' ')" -eq "${#expected_assets[@]}"
+          cmp -s .tmp/release/expected-assets.txt .tmp/release/actual-assets.txt
+
+          release_base="https://github.com/${SOURCE_REPOSITORY}/releases/download/${TAG}"
+          curl --fail --silent --show-error --location \
+            "$release_base/checksums.txt" \
+            --output .tmp/release/checksums.txt
+          for asset in "${expected_assets[@]}"; do
+            test "$asset" = checksums.txt && continue
+            curl --fail --silent --show-error --location \
+              "$release_base/$asset" \
+              --output ".tmp/release/$asset"
           done
-          gh release download "$TAG" --repo "$SOURCE_REPOSITORY" --pattern checksums.txt --dir .tmp/release --clobber
-          for asset in \
+
+          mapfile -t checksum_lines < .tmp/release/checksums.txt
+          test "${#checksum_lines[@]}" -eq 5
+          checksum_assets=(
             "backlog_${VERSION}_darwin_amd64.tar.gz" \
             "backlog_${VERSION}_darwin_arm64.tar.gz" \
             "backlog_${VERSION}_linux_amd64.tar.gz" \
             "backlog_${VERSION}_linux_arm64.tar.gz" \
-            "backlog_${VERSION}_windows_amd64.zip"; do
-            gh release download "$TAG" --repo "$SOURCE_REPOSITORY" --pattern "$asset" --dir .tmp/release --clobber
+            "backlog_${VERSION}_windows_amd64.zip"
+          )
+          for index in "${!checksum_assets[@]}"; do
+            asset="${checksum_assets[$index]}"
+            line="${checksum_lines[$index]}"
+            checksum_pattern="^[0-9a-f]{64}  ${asset}$"
+            if [[ ! "$line" =~ $checksum_pattern ]]; then
+              echo "checksums.txt must contain exactly five ordered SHA-256 lines" >&2
+              exit 1
+            fi
           done
-          if command -v shasum >/dev/null 2>&1; then
-            (cd .tmp/release && shasum -a 256 -c checksums.txt)
-          else
-            (cd .tmp/release && sha256sum -c checksums.txt)
-          fi
 
-      - name: Reject duplicate or older Formula update
-        id: guard
+          for asset in "${checksum_assets[@]}"; do
+            expected="$(sed -n "s/^\([0-9a-f]\{64\}\)  ${asset}$/\1/p" .tmp/release/checksums.txt)"
+            test -n "$expected"
+            if command -v shasum >/dev/null 2>&1; then
+              actual="$(shasum -a 256 ".tmp/release/$asset" | awk '{print $1}')"
+            else
+              actual="$(sha256sum ".tmp/release/$asset" | awk '{print $1}')"
+            fi
+            test "$actual" = "$expected"
+          done
+
+      - name: Reject duplicate, older, or mismatched Formula update
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
-          set -eu
-          current="$(sed -n 's#^      url "https://github.com/autotaker/agent-harness-backlog/releases/download/v\([^/]*\)/.*$#\1#p' Formula/backlog.rb | head -n 1)"
-          test -n "$current"
-          if test "$current" = "$VERSION"; then
-            echo "already at $VERSION"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          elif test "$(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n 1)" != "$VERSION"; then
-            echo "release $VERSION is not newer than Formula $current" >&2
-            exit 1
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
 
-      - name: Render Formula
-        if: steps.guard.outputs.skip != 'true'
+          version = os.environ["VERSION"]
+          formula = Path("Formula/backlog.rb").read_text(encoding="utf-8")
+          requested = tuple(int(part) for part in version.split("."))
+          expected_targets = {
+              "darwin_amd64",
+              "darwin_arm64",
+              "linux_amd64",
+              "linux_arm64",
+          }
+          pair_pattern = re.compile(
+              r'^\s*url "https://github\.com/autotaker/agent-harness-backlog/'
+              r'releases/download/(v[0-9]+\.[0-9]+\.[0-9]+)/([^"\n]+)"\s*\n'
+              r'\s*sha256 "([0-9a-f]{64})"\s*$',
+              re.MULTILINE,
+          )
+          pairs = pair_pattern.findall(formula)
+          url_count = len(re.findall(r'^\s*url "', formula, re.MULTILINE))
+          sha_count = len(re.findall(r'^\s*sha256 "', formula, re.MULTILINE))
+          if url_count != 4 or sha_count != 4 or len(pairs) != 4:
+              raise SystemExit("Formula must contain exactly four URL/SHA-256 pairs")
+
+          current_versions = {release_version for release_version, _, _ in pairs}
+          filenames = {filename for _, filename, _ in pairs}
+          if len(current_versions) != 1:
+              raise SystemExit("Formula targets do not agree on their release version")
+          current_version = next(iter(current_versions))[1:]
+          expected_filenames = {
+              f"backlog_{current_version}_{target}.tar.gz"
+              for target in expected_targets
+          }
+          if filenames != expected_filenames:
+              raise SystemExit("Formula targets do not match the four supported archives")
+
+          current = tuple(int(part) for part in current_version.split("."))
+          if requested == current:
+              raise SystemExit(f"release {version} is already in Formula")
+          if requested < current:
+              raise SystemExit(f"release {version} is older than Formula {current_version}")
+          PY
+
+      - name: Render candidate Formula
         env:
           VERSION: ${{ steps.release.outputs.version }}
-        run: python3 scripts/update-formula.py --version "$VERSION" --checksums .tmp/release/checksums.txt --output Formula/backlog.rb
+        run: |
+          set -euo pipefail
+          python3 scripts/update-formula.py \
+            --version "$VERSION" \
+            --checksums .tmp/release/checksums.txt \
+            --output .tmp/release/backlog.rb
 
       - name: Create update branch and PR
-        if: steps.guard.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
-          set -eu
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
           branch="automation/backlog-${VERSION}"
-          if test "$(gh pr list --base main --head "$branch" --state open --json number --jq 'length')" -gt 0; then
-            echo "an update PR for $VERSION is already open"
+          candidate=".tmp/release/backlog.rb"
+          main_sha="$(gh api "repos/${repo}/git/ref/heads/main" --jq '.object.sha')"
+
+          open_prs=".tmp/release/open-prs.json"
+          gh api "repos/${repo}/pulls?state=open&per_page=100" > "$open_prs"
+          other_updates="$(jq --arg branch "$branch" '[.[] | select(.head.ref | startswith("automation/backlog-")) | select(.head.ref != $branch)] | length' "$open_prs")"
+          test "$other_updates" -eq 0
+
+          same_open_prs="$(jq --arg branch "$branch" --arg repo "$repo" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == $repo)] | length' "$open_prs")"
+          same_branch_open_prs="$(jq --arg branch "$branch" '[.[] | select(.head.ref == $branch)] | length' "$open_prs")"
+          test "$same_branch_open_prs" -le 1
+          if test "$same_branch_open_prs" -gt 0 && test "$same_open_prs" -eq 0; then
+            echo "an update PR for ${branch} has an unexpected base or head repository" >&2
+            exit 1
+          fi
+
+          all_prs=".tmp/release/all-prs.json"
+          gh api "repos/${repo}/pulls?state=all&per_page=100" > "$all_prs"
+          closed_unmerged="$(jq --arg repo "$repo" --arg branch "$branch" '[.[] | select(.head.ref == $branch and .head.repo.full_name == $repo and .state == "closed" and .merged_at == null)] | length' "$all_prs")"
+          test "$closed_unmerged" -eq 0
+          same_branch_history="$(jq --arg repo "$repo" --arg branch "$branch" '[.[] | select(.head.ref == $branch and .head.repo.full_name == $repo and .state != "open")] | length' "$all_prs")"
+          test "$same_branch_history" -eq 0
+
+          branch_sha=""
+          if branch_ref="$(git ls-remote --exit-code --heads origin "refs/heads/${branch}")"; then
+            branch_sha="${branch_ref%%$'\t'*}"
+          else
+            status=$?
+            test "$status" -eq 2
+          fi
+
+          validate_branch() {
+            test -n "$branch_sha"
+            commit_json="$(gh api "repos/${repo}/commits/${branch_sha}")"
+            test "$(jq '.parents | length' <<< "$commit_json")" -eq 1
+            test "$(jq -r '.parents[0].sha' <<< "$commit_json")" = "$main_sha"
+            gh api "repos/${repo}/compare/${main_sha}...${branch_sha}" \
+              --jq '.files[]?.filename' > .tmp/release/changed-files.txt
+            test "$(wc -l < .tmp/release/changed-files.txt | tr -d ' ')" -eq 1
+            test "$(sed -n '1p' .tmp/release/changed-files.txt)" = Formula/backlog.rb
+            gh api "repos/${repo}/contents/Formula/backlog.rb?ref=${branch}" \
+              --jq '.content' | base64 --decode > .tmp/release/branch-formula.rb
+            cmp -s "$candidate" .tmp/release/branch-formula.rb
+          }
+
+          if test "$same_open_prs" -eq 1; then
+            validate_branch
+            echo "an update PR for ${VERSION} already matches the deterministic Formula; no changes needed"
             exit 0
           fi
-          git switch --create "$branch"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/backlog.rb
-          git diff --cached --quiet && exit 0
-          git commit -m "backlog ${VERSION}"
-          git push --set-upstream origin "$branch"
-          gh pr create --base main --head "$branch" --title "backlog ${VERSION}" --body "Update Formula to the published backlog ${VERSION} release."
+
+          if test -n "$branch_sha"; then
+            validate_branch
+          fi
+
+          if test -n "$branch_sha"; then
+            git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
+            git switch --create "$branch" "origin/${branch}"
+          else
+            git fetch origin main --depth=1
+            git switch --create "$branch" origin/main
+            cp "$candidate" Formula/backlog.rb
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Formula/backlog.rb
+            git diff --cached --quiet && {
+              echo "candidate Formula did not change from main" >&2
+              exit 1
+            }
+            git commit -m "backlog ${VERSION}"
+            git push --set-upstream origin "$branch"
+          fi
+
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "backlog ${VERSION}" \
+            --body "Update Formula to the published backlog ${VERSION} release."
