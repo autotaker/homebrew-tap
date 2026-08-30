@@ -31,6 +31,9 @@ tag starts the formula update from the Tap Actions UI:
 4. Merge only after the required checks and human review pass, using branch
    protection.
 
+If the workflow fails, it stops. Diagnose and resolve the cause, then manually
+rerun the same tag.
+
 The workflow validates the public release archives and checksums before it
 opens the pull request. Pull requests must pass the macOS/Linux matrix before
 they can be merged.
