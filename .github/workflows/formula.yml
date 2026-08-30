@@ -1,0 +1,92 @@
+name: Formula
+
+on:
+  pull_request:
+    paths:
+      - Formula/backlog.rb
+      - scripts/**
+      - .github/workflows/formula.yml
+      - .github/workflows/update-formula.yml
+  push:
+    branches:
+      - main
+    paths:
+      - Formula/backlog.rb
+      - scripts/**
+      - .github/workflows/formula.yml
+      - .github/workflows/update-formula.yml
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: formula-audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Homebrew on Linux
+        if: runner.os == 'Linux'
+        uses: Homebrew/actions/setup-homebrew@main
+      - name: Register the PR Formula in Homebrew
+        run: |
+          set -eu
+          brew tap autotaker/tap https://github.com/autotaker/homebrew-tap
+          tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
+          mkdir -p "$tap_dir/Formula"
+          if ! cmp -s "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"; then
+            cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
+          fi
+      - name: Audit formula
+        run: brew audit --strict --new --online autotaker/tap/backlog
+      - name: Check formula style
+        run: brew style autotaker/tap/backlog
+
+  smoke:
+    name: smoke-${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            runner: macos-14
+            expected_arch: arm64
+          - target: macos-amd64
+            runner: macos-15-intel
+            expected_arch: x86_64
+          - target: linux-amd64
+            runner: ubuntu-24.04
+            expected_arch: x86_64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            expected_arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Homebrew on Linux
+        if: runner.os == 'Linux'
+        uses: Homebrew/actions/setup-homebrew@main
+      - name: Register the PR Formula in Homebrew
+        run: |
+          set -eu
+          brew tap autotaker/tap https://github.com/autotaker/homebrew-tap
+          tap_dir="$(brew --repository)/Library/Taps/autotaker/homebrew-tap"
+          mkdir -p "$tap_dir/Formula"
+          if ! cmp -s "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"; then
+            cp "$GITHUB_WORKSPACE/Formula/backlog.rb" "$tap_dir/Formula/backlog.rb"
+          fi
+      - name: Verify runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.expected_arch }}
+        run: |
+          set -eu
+          actual="$(uname -m)"
+          test "$actual" = "$EXPECTED_ARCH"
+      - name: Verify release assets and checksums
+        run: ./scripts/verify-release.sh
+      - name: Install formula from this checkout
+        run: brew install --formula autotaker/tap/backlog
+      - name: Run Homebrew formula test
+        run: brew test backlog
+      - name: Run backlog smoke test
+        run: ./scripts/smoke-test.sh "$(brew --prefix)/bin/backlog"
